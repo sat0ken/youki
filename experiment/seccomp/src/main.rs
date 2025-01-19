@@ -8,7 +8,7 @@ use std::os::fd::{IntoRawFd, OwnedFd};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::slice;
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use nix::{libc, sys::{
     signal::Signal,
     socket::{
@@ -21,6 +21,7 @@ use nix::{libc, sys::{
 use syscall_numbers::x86_64;
 use syscalls::syscall_args;
 use seccomp::seccomp::{InstructionData, Rule};
+use seccomp::testutils::read_seccomp_profile;
 
 fn send_fd<F: AsRawFd>(sock: OwnedFd, fd: &F) -> nix::Result<()> {
     let fd = fd.as_raw_fd();
@@ -79,70 +80,138 @@ async fn handle_signal(pid: nix::unistd::Pid) -> Result<()> {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let (sock_for_child, sock_for_parent) = socket::socketpair(
-        socket::AddressFamily::Unix,
-        SockType::Stream,
-        None,
-        SockFlag::empty(),
-    )?;
+async fn test_seccomp_profile(inst_data_set :Vec<InstructionData>) -> Result<()> {
 
-    let _ = prctl::set_no_new_privileges(true);
-    let inst_data = InstructionData{
-        arc: Arch::X86,
-        def_action: SECCOMP_RET_KILL_PROCESS,
-        rule_arr: vec![
-            Rule::new("getcwd".parse()?, 0,  syscall_args!(),false),
-            Rule::new("write".parse()?,1, syscall_args!(libc::STDERR_FILENO as usize), false),
-            Rule::new("mkdir".parse()?,0, syscall_args!(), true)
-        ]
-    };
-    let seccomp = Seccomp {filters: Vec::from(inst_data)};
+    for inst_data in inst_data_set {
+        let (sock_for_child, sock_for_parent) = socket::socketpair(
+            socket::AddressFamily::Unix,
+            SockType::Stream,
+            None,
+            SockFlag::empty(),
+        )?;
 
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen for event");
-        println!("Received ctrl-c event. Bye");
-        std::process::exit(0);
-    });
+        let _ = prctl::set_no_new_privileges(true);
+        let seccomp = Seccomp {filters: Vec::from(inst_data)};
 
-    match unsafe { nix::unistd::fork()? } {
-        nix::unistd::ForkResult::Child => {
-            std::panic::catch_unwind(|| {
-                let notify_fd = seccomp.apply().unwrap();
-                println!(
-                    "Seccomp applied successfully with notify fd: {:?}",
-                    notify_fd
-                );
-                send_fd(sock_for_child, &notify_fd).unwrap();
-
-                if let Err(e) = mkdir("/tmp/test", Mode::S_IRUSR | Mode::S_IWUSR) {
-                    eprintln!("Failed to mkdir: {}", e);
-                } else {
-                    println!("mkdir succeeded");
-                }
-
-                eprintln!("stderr should be banned by seccomp");
-            })
-            .unwrap();
-
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for event");
+            println!("Received ctrl-c event. Bye");
             std::process::exit(0);
-        }
-        nix::unistd::ForkResult::Parent { child } => {
-            let notify_fd = recv_fd::<NotifyFd>(sock_for_parent.as_raw_fd())?.unwrap();
+        });
 
-            close(sock_for_child.as_raw_fd())?;
-            close(sock_for_parent.as_raw_fd())?;
+        match unsafe { nix::unistd::fork()? } {
+            nix::unistd::ForkResult::Child => {
+                std::panic::catch_unwind(|| {
+                    let notify_fd = seccomp.apply().unwrap();
+                    println!(
+                        "Seccomp applied successfully with notify fd: {:?}",
+                        notify_fd
+                    );
+                    send_fd(sock_for_child, &notify_fd).unwrap();
 
-            tokio::spawn(async move {
-                handle_signal(child).await.unwrap();
-            });
+                    if let Err(e) = mkdir("/tmp/test", Mode::S_IRUSR | Mode::S_IWUSR) {
+                        eprintln!("Failed to mkdir: {}", e);
+                    } else {
+                        println!("mkdir succeeded");
+                    }
 
-            handle_notifications(notify_fd).await?;
-        }
-    };
+                    eprintln!("stderr should be banned by seccomp");
+                })
+                    .unwrap();
+
+                std::process::exit(0);
+            }
+            nix::unistd::ForkResult::Parent { child } => {
+                let notify_fd = recv_fd::<NotifyFd>(sock_for_parent.as_raw_fd())?.unwrap();
+
+                close(sock_for_child.as_raw_fd())?;
+                close(sock_for_parent.as_raw_fd())?;
+
+                tokio::spawn(async move {
+                    handle_signal(child).await.unwrap();
+                });
+
+                handle_notifications(notify_fd).await?;
+            }
+        };
+    }
 
     Ok(())
 }
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let profile = read_seccomp_profile("./profile/edit_default.json".as_ref()).unwrap();
+    test_seccomp_profile(profile).await?;
+    Ok(())
+}
+
+// #[tokio::main]
+// async fn main() -> Result<()> {
+//     let (sock_for_child, sock_for_parent) = socket::socketpair(
+//         socket::AddressFamily::Unix,
+//         SockType::Stream,
+//         None,
+//         SockFlag::empty(),
+//     )?;
+//
+//     let _ = prctl::set_no_new_privileges(true);
+//     let inst_data = InstructionData{
+//         arc: Arch::X86,
+//         def_action: SECCOMP_RET_KILL_PROCESS,
+//         rule_arr: vec![
+//             Rule::new("getcwd".parse()?, 0,  syscall_args!(),false),
+//             Rule::new("write".parse()?,1, syscall_args!(libc::STDERR_FILENO as usize), false),
+//             Rule::new("mkdir".parse()?,0, syscall_args!(), true)
+//         ]
+//     };
+//     let seccomp = Seccomp {filters: Vec::from(inst_data)};
+//
+//     tokio::spawn(async move {
+//         tokio::signal::ctrl_c()
+//             .await
+//             .expect("failed to listen for event");
+//         println!("Received ctrl-c event. Bye");
+//         std::process::exit(0);
+//     });
+//
+//     match unsafe { nix::unistd::fork()? } {
+//         nix::unistd::ForkResult::Child => {
+//             std::panic::catch_unwind(|| {
+//                 let notify_fd = seccomp.apply().unwrap();
+//                 println!(
+//                     "Seccomp applied successfully with notify fd: {:?}",
+//                     notify_fd
+//                 );
+//                 send_fd(sock_for_child, &notify_fd).unwrap();
+//
+//                 if let Err(e) = mkdir("/tmp/test", Mode::S_IRUSR | Mode::S_IWUSR) {
+//                     eprintln!("Failed to mkdir: {}", e);
+//                 } else {
+//                     println!("mkdir succeeded");
+//                 }
+//
+//                 eprintln!("stderr should be banned by seccomp");
+//             })
+//             .unwrap();
+//
+//             std::process::exit(0);
+//         }
+//         nix::unistd::ForkResult::Parent { child } => {
+//             let notify_fd = recv_fd::<NotifyFd>(sock_for_parent.as_raw_fd())?.unwrap();
+//
+//             close(sock_for_child.as_raw_fd())?;
+//             close(sock_for_parent.as_raw_fd())?;
+//
+//             tokio::spawn(async move {
+//                 handle_signal(child).await.unwrap();
+//             });
+//
+//             handle_notifications(notify_fd).await?;
+//         }
+//     };
+//
+//     Ok(())
+// }

@@ -257,6 +257,7 @@ impl Rule {
     }
 
     pub fn to_instruction(arch: &Arch, action: u32, rule: &Rule) -> Vec<Instruction> {
+        println!("arch is {:?}, rule is {:?}", arch, rule);
         let mut bpf_prog = gen_validate(arch);
         bpf_prog.append(&mut vec![Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, 0)]);
         bpf_prog.append(&mut vec![Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 1,
