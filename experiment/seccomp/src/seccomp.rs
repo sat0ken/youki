@@ -249,9 +249,10 @@ pub struct Rule {
 }
 
 impl Rule {
-    pub fn new(syscall: String, arg_cnt: u8, args: SyscallArgs, is_notify: bool) -> Self {
+    pub fn new(syscall: String, action: u32, arg_cnt: u8, args: SyscallArgs, is_notify: bool) -> Self {
         Self {
             syscall,
+            action,
             arg_cnt,
             args,
             is_notify,
@@ -296,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_to_instruction_x86() {
-        let rule = Rule::new("getcwd".parse().unwrap(), 0, syscall_args!(), false);
+        let rule = Rule::new("getcwd".parse().unwrap(), SECCOMP_RET_ALLOW,0, syscall_args!(), false);
         let inst = Rule::to_instruction(&Arch::X86, SECCOMP_RET_KILL_PROCESS, &rule);
         let bpf_prog = gen_validate(&Arch::X86);
         assert_eq!(inst[0], bpf_prog[0]);
@@ -310,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_to_instruction_aarch64() {
-        let rule = Rule::new("getcwd".parse().unwrap(), 0, syscall_args!(), false);
+        let rule = Rule::new("getcwd".parse().unwrap(), SECCOMP_RET_ALLOW,0, syscall_args!(), false);
         let inst = Rule::to_instruction(&Arch::AArch64, SECCOMP_RET_KILL_PROCESS, &rule);
         let bpf_prog = gen_validate(&Arch::AArch64);
         assert_eq!(inst[0], bpf_prog[0]);
