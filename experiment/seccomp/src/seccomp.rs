@@ -8,12 +8,15 @@ use std::{
 };
 
 use std::str::FromStr;
+use anyhow::anyhow;
+use anyhow::Result;
 use nix::{
     errno::Errno,
     ioctl_readwrite, ioctl_write_ptr, libc,
     libc::{SECCOMP_FILTER_FLAG_NEW_LISTENER, SECCOMP_SET_MODE_FILTER},
     unistd,
 };
+use oci_spec::runtime::{LinuxSeccomp, LinuxSeccompAction, LinuxSeccompOperator};
 use syscalls::{SyscallArgs};
 use crate::instruction::{*};
 use crate::instruction::{Arch, Instruction, SECCOMP_IOC_MAGIC};
@@ -216,6 +219,64 @@ fn get_syscall_number(arc: &Arch, name: &str) -> Option<u64> {
             }
         }
     }
+}
+
+fn translate_action(action: LinuxSeccompAction) -> u32 {
+    let action = match action {
+        LinuxSeccompAction::ScmpActKill => SECCOMP_RET_KILL_THREAD,
+        LinuxSeccompAction::ScmpActTrap => SECCOMP_RET_TRAP,
+        LinuxSeccompAction::ScmpActErrno => SECCOMP_RET_ERRNO,
+        LinuxSeccompAction::ScmpActTrace => SECCOMP_RET_TRACE,
+        LinuxSeccompAction::ScmpActAllow => SECCOMP_RET_ALLOW,
+        LinuxSeccompAction::ScmpActKillProcess => SECCOMP_RET_KILL_PROCESS,
+        LinuxSeccompAction::ScmpActNotify => SECCOMP_RET_USER_NOTIF,
+        LinuxSeccompAction::ScmpActLog => SECCOMP_RET_LOG,
+        LinuxSeccompAction::ScmpActKillThread => SECCOMP_RET_KILL_THREAD,
+    };
+    action
+}
+
+fn translate_op(op: LinuxSeccompOperator) -> SeccompCompareOp {
+    match op {
+        LinuxSeccompOperator::ScmpCmpNe => SeccompCompareOp::NotEqual,
+        LinuxSeccompOperator::ScmpCmpLt => SeccompCompareOp::LessThan,
+        LinuxSeccompOperator::ScmpCmpLe => SeccompCompareOp::LessOrEqual,
+        LinuxSeccompOperator::ScmpCmpEq => SeccompCompareOp::Equal,
+        LinuxSeccompOperator::ScmpCmpGe => SeccompCompareOp::GreaterOrEqual,
+        LinuxSeccompOperator::ScmpCmpGt => SeccompCompareOp::GreaterThan,
+        LinuxSeccompOperator::ScmpCmpMaskedEq => SeccompCompareOp::MaskedEqual,
+    }
+}
+
+fn check_seccomp(seccomp: &LinuxSeccomp) -> Result<()> {
+    // We don't support notify as default action. After the seccomp filter is
+    // created with notify, the container process will have to communicate the
+    // returned fd to another process. Therefore, we need the write syscall or
+    // otherwise, the write syscall will be block by the seccomp filter causing
+    // the container process to hang. `runc` also disallow notify as default
+    // action.
+    // Note: read and close syscall are also used, because if we can
+    // successfully write fd to another process, the other process can choose to
+    // handle read/close syscall and allow read and close to proceed as
+    // expected.
+    if seccomp.default_action() == LinuxSeccompAction::ScmpActNotify {
+        // Todo: consider need to porting SeccompError
+        return Err(anyhow!("Cant ScmpActNotify to default action"));
+    }
+
+    if let Some(syscalls) = seccomp.syscalls() {
+        for syscall in syscalls {
+            if syscall.action() == LinuxSeccompAction::ScmpActNotify {
+                for name in syscall.names() {
+                    if name == "write" {
+                        return Err(anyhow!("Cant filter to write system call"));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug)]
