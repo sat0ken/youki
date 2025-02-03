@@ -50,6 +50,18 @@ pub const SECCOMP_RET_USER_NOTIF: u32 = 0x7fc00000;
 pub const AUDIT_ARCH_X86_64: u32 = 62 | 0x8000_0000 | 0x4000_0000;
 pub const AUDIT_ARCH_AARCH64: u32 = 183 | 0x8000_0000 | 0x4000_0000;
 
+// Comparison operators
+// See libseccomp/include/seccomp.h.in
+pub enum SeccompCompareOp {
+    NotEqual = 1,
+    LessThan,
+    LessOrEqual,
+    Equal,
+    GreaterOrEqual,
+    GreaterThan,
+    MaskedEqual
+}
+
 // ```c
 // struct seccomp_data {
 //     int nr;
