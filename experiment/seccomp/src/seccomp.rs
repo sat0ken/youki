@@ -242,6 +242,7 @@ impl From<InstructionData> for Vec<Instruction> {
 #[derive(Debug)]
 pub struct Rule {
     pub syscall: String,
+    pub action: u32,
     pub arg_cnt: u8,
     pub args: SyscallArgs,
     pub is_notify: bool
