@@ -284,6 +284,7 @@ pub struct InstructionData {
     pub arc: Arch,
     pub def_action: u32,
     pub def_errno_ret: u32,
+    pub flags: Vec<u32>,
     pub rule_arr: Vec<Rule>
 }
 
