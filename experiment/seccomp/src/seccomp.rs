@@ -7,7 +7,8 @@ use std::{
     },
 };
 
-use std::str::FromStr;
+use crate::instruction::*;
+use crate::instruction::{Arch, Instruction, SECCOMP_IOC_MAGIC};
 use anyhow::anyhow;
 use anyhow::Result;
 use nix::{
@@ -16,10 +17,12 @@ use nix::{
     libc::{SECCOMP_FILTER_FLAG_NEW_LISTENER, SECCOMP_SET_MODE_FILTER},
     unistd,
 };
-use oci_spec::runtime::{Arch as OciSpecArch, LinuxSeccomp, LinuxSeccompAction, LinuxSeccompFilterFlag, LinuxSeccompOperator};
+use oci_spec::runtime::{
+    Arch as OciSpecArch, LinuxSeccomp, LinuxSeccompAction, LinuxSeccompFilterFlag,
+    LinuxSeccompOperator,
+};
+use std::str::FromStr;
 use syscalls::{syscall_args, SyscallArgs};
-use crate::instruction::{*};
-use crate::instruction::{Arch, Instruction, SECCOMP_IOC_MAGIC};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SeccompError {
@@ -206,18 +209,14 @@ struct Filters {
 
 fn get_syscall_number(arc: &Arch, name: &str) -> Option<u64> {
     match arc {
-        Arch::X86 => {
-            match syscalls::x86_64::Sysno::from_str(name) {
-                Ok(syscall) => Some(syscall as u64),
-                Err(_) => None,
-            }
+        Arch::X86 => match syscalls::x86_64::Sysno::from_str(name) {
+            Ok(syscall) => Some(syscall as u64),
+            Err(_) => None,
         },
-        Arch::AArch64 => {
-            match syscalls::aarch64::Sysno::from_str(name) {
-                Ok(syscall) => Some(syscall as u64),
-                Err(_) => None,
-            }
-        }
+        Arch::AArch64 => match syscalls::aarch64::Sysno::from_str(name) {
+            Ok(syscall) => Some(syscall as u64),
+            Err(_) => None,
+        },
     }
 }
 
@@ -285,7 +284,7 @@ pub struct InstructionData {
     pub def_action: u32,
     pub def_errno_ret: u32,
     pub flags: Vec<u32>,
-    pub rule_arr: Vec<Rule>
+    pub rule_arr: Vec<Rule>,
 }
 
 impl From<InstructionData> for Vec<Instruction> {
@@ -305,7 +304,7 @@ impl InstructionData {
 
     pub fn from_linux_seccomp(seccomp: &LinuxSeccomp) -> Result<Self> {
         let mut data: InstructionData = Default::default();
-        let mut rules :Vec<Rule> = Vec::new();
+        let mut rules: Vec<Rule> = Vec::new();
 
         check_seccomp(seccomp)?;
         data.def_action = translate_action(seccomp.default_action());
@@ -343,7 +342,7 @@ impl InstructionData {
          */
         if let Some(syscalls) = seccomp.syscalls() {
             for syscall in syscalls {
-                let mut rule :Rule = Default::default();
+                let mut rule: Rule = Default::default();
                 rule.action = translate_action(syscall.action());
                 if rule.action == SECCOMP_RET_USER_NOTIF {
                     rule.is_notify = true
@@ -386,7 +385,7 @@ pub struct Rule {
     pub arg_cnt: Option<u8>,
     pub args: Option<SyscallArgs>,
     pub op: Option<SeccompCompareOp>,
-    pub is_notify: bool
+    pub is_notify: bool,
 }
 
 impl Rule {
@@ -422,8 +421,8 @@ impl Rule {
 
 #[cfg(test)]
 mod tests {
-    use syscalls::syscall_args;
     use super::*;
+    use syscalls::syscall_args;
 
     #[test]
     fn test_get_syscall_number_x86() {

@@ -65,7 +65,7 @@ pub enum SeccompCompareOp {
     Equal,
     GreaterOrEqual,
     GreaterThan,
-    MaskedEqual
+    MaskedEqual,
 }
 
 // ```c
