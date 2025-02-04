@@ -16,8 +16,8 @@ use nix::{
     libc::{SECCOMP_FILTER_FLAG_NEW_LISTENER, SECCOMP_SET_MODE_FILTER},
     unistd,
 };
-use oci_spec::runtime::{LinuxSeccomp, LinuxSeccompAction, LinuxSeccompOperator};
-use syscalls::{SyscallArgs};
+use oci_spec::runtime::{Arch as OciSpecArch, LinuxSeccomp, LinuxSeccompAction, LinuxSeccompFilterFlag, LinuxSeccompOperator};
+use syscalls::{syscall_args, SyscallArgs};
 use crate::instruction::{*};
 use crate::instruction::{Arch, Instruction, SECCOMP_IOC_MAGIC};
 
@@ -279,7 +279,7 @@ fn check_seccomp(seccomp: &LinuxSeccomp) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct InstructionData {
     pub arc: Arch,
     pub def_action: u32,
@@ -301,22 +301,102 @@ impl From<InstructionData> for Vec<Instruction> {
     }
 }
 
-#[derive(Debug)]
+impl InstructionData {
+
+    pub fn from_linux_seccomp(seccomp: &LinuxSeccomp) -> Result<Self> {
+        let mut data: InstructionData = Default::default();
+        let mut rules :Vec<Rule> = Vec::new();
+
+        check_seccomp(seccomp)?;
+        data.def_action = translate_action(seccomp.default_action());
+        if let Some(ret) = seccomp.default_errno_ret() {
+            data.def_errno_ret = ret
+        } else {
+            data.def_errno_ret = libc::EPERM as u32
+        }
+
+        if let Some(flags) = seccomp.flags() {
+            for flag in flags {
+                match flag {
+                    LinuxSeccompFilterFlag::SeccompFilterFlagLog => data.flags.push(SECCOMP_FILTER_FLAG_LOG),
+                    LinuxSeccompFilterFlag::SeccompFilterFlagTsync => data.flags.push(SECCOMP_FILTER_FLAG_TSYNC),
+                    LinuxSeccompFilterFlag::SeccompFilterFlagSpecAllow => data.flags.push(SECCOMP_FILTER_FLAG_SPEC_ALLOW),
+                }
+            }
+        }
+
+        if let Some(archs) = seccomp.architectures() {
+            for &arch in archs {
+                // Todo: consider support other Arch
+                match arch {
+                    OciSpecArch::ScmpArchX86_64 => data.arc = Arch::X86,
+                    OciSpecArch::ScmpArchAarch64 => data.arc = Arch::AArch64,
+                    _ => {}
+                }
+            }
+        }
+
+        /*
+        Todo: how to impl this?
+        ctx.set_ctl_nnp(false)
+        .map_err(|err| SeccompError::SetCtlNnp { source: err })?;
+         */
+        if let Some(syscalls) = seccomp.syscalls() {
+            for syscall in syscalls {
+                let mut rule :Rule = Default::default();
+                rule.action = translate_action(syscall.action());
+                if rule.action == SECCOMP_RET_USER_NOTIF {
+                    rule.is_notify = true
+                } else {
+                    rule.is_notify = false
+                }
+
+                for name in syscall.names() {
+                    rule.syscall = name.to_string();
+                    match syscall.args() {
+                        Some(args) => {
+                            for arg in args {
+                                rule.arg_cnt = Option::from(arg.index() as u8);
+                                rule.args = Option::from(syscall_args!(arg.value() as usize));
+                                if arg.value_two().is_some() {
+                                    rule.args = Option::from(
+                                        syscall_args!(arg.value() as usize, arg.value_two().unwrap() as usize)
+                                    );
+                                }
+                                rule.op = Option::from(translate_op(arg.op()))
+                            }
+                        }
+                        None => {
+                            continue
+                        }
+                    }
+                }
+                rules.push(rule);
+            }
+        }
+        data.rule_arr = rules;
+        Ok(data)
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct Rule {
     pub syscall: String,
     pub action: u32,
-    pub arg_cnt: u8,
-    pub args: SyscallArgs,
+    pub arg_cnt: Option<u8>,
+    pub args: Option<SyscallArgs>,
+    pub op: Option<SeccompCompareOp>,
     pub is_notify: bool
 }
 
 impl Rule {
-    pub fn new(syscall: String, action: u32, arg_cnt: u8, args: SyscallArgs, is_notify: bool) -> Self {
+    pub fn new(syscall: String, action: u32, arg_cnt: Option<u8>, args: Option<SyscallArgs>, op: Option<SeccompCompareOp>, is_notify: bool) -> Self {
         Self {
             syscall,
             action,
             arg_cnt,
             args,
+            op,
             is_notify,
         }
     }
@@ -326,9 +406,9 @@ impl Rule {
         bpf_prog.append(&mut vec![Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, 0)]);
         bpf_prog.append(&mut vec![Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 1,
                                                     get_syscall_number(arch, &rule.syscall).unwrap() as c_uint)]);
-        if rule.arg_cnt != 0 {
+        if rule.arg_cnt.is_some() {
             bpf_prog.append(&mut vec![Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, seccomp_data_args_offset().into())]);
-            bpf_prog.append(&mut vec![Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, rule.args.arg0 as c_uint)]);
+            bpf_prog.append(&mut vec![Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, rule.args.unwrap().arg0 as c_uint)]);
         }
 
         if rule.is_notify {
@@ -359,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_to_instruction_x86() {
-        let rule = Rule::new("getcwd".parse().unwrap(), SECCOMP_RET_ALLOW,0, syscall_args!(), false);
+        let rule = Rule::new("getcwd".parse().unwrap(), SECCOMP_RET_ALLOW, None, None, None,false);
         let inst = Rule::to_instruction(&Arch::X86, SECCOMP_RET_KILL_PROCESS, &rule);
         let bpf_prog = gen_validate(&Arch::X86);
         assert_eq!(inst[0], bpf_prog[0]);
@@ -373,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_to_instruction_aarch64() {
-        let rule = Rule::new("getcwd".parse().unwrap(), SECCOMP_RET_ALLOW,0, syscall_args!(), false);
+        let rule = Rule::new("getcwd".parse().unwrap(), SECCOMP_RET_ALLOW, None, None, None,false);
         let inst = Rule::to_instruction(&Arch::AArch64, SECCOMP_RET_KILL_PROCESS, &rule);
         let bpf_prog = gen_validate(&Arch::AArch64);
         assert_eq!(inst[0], bpf_prog[0]);
