@@ -1,9 +1,11 @@
 use crate::instruction::Instruction;
 use crate::instruction::*;
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Default)]
 pub enum Arch {
-    X86,AArch64
+    #[default]
+    X86,
+    AArch64
 }
 
 pub fn gen_validate(arc: &Arch) -> Vec<Instruction> {

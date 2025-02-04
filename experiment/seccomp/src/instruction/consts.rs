@@ -57,6 +57,7 @@ pub const AUDIT_ARCH_AARCH64: u32 = 183 | 0x8000_0000 | 0x4000_0000;
 
 // Comparison operators
 // See libseccomp/include/seccomp.h.in
+#[derive(Debug)]
 pub enum SeccompCompareOp {
     NotEqual = 1,
     LessThan,
