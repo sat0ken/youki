@@ -42,7 +42,9 @@ pub fn run(args: Run, root_path: PathBuf, systemd_cgroup: bool) -> Result<i32> {
     );
     let foreground_result = handle_foreground(container.pid().unwrap());
     // execute the destruction action after the container finishes running
-    container.delete(true)?;
+    if !args.keep {
+        container.delete(true)?;
+    }
     // return result
     foreground_result
 }
