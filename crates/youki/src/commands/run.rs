@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use nix::sys::prctl;
 use libcontainer::container::builder::ContainerBuilder;
 use libcontainer::syscall::syscall::SyscallType;
 use liboci_cli::Run;
@@ -31,6 +32,10 @@ pub fn run(args: Run, root_path: PathBuf, systemd_cgroup: bool) -> Result<i32> {
 
     if args.detach {
         return Ok(0);
+    }
+
+    if args.no_subreaper {
+        prctl::set_child_subreaper(true)?;
     }
 
     // Using `debug_assert` here rather than returning an error because this is
