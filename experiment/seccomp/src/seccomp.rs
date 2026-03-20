@@ -26,6 +26,7 @@ use std::{
         unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
     },
 };
+use std::io::Write;
 use syscalls::{SyscallArgs, syscall_args};
 
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +84,14 @@ impl Seccomp {
 
         Errno::result(notify_fd).map_err(|e| SeccompError::Apply(e.to_string()))?;
         Ok(unsafe { NotifyFd::from_raw_fd(notify_fd as RawFd) })
+    }
+
+    pub fn export_bpf<W: Write>(&self, writer: &mut W) -> Result<(), SeccompError> {
+        for inst in &self.filters {
+            writer.write_all(inst.to_bytes().as_slice())
+                .map_err(|e| SeccompError::Apply(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 

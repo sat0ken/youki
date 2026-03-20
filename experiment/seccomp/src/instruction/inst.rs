@@ -39,6 +39,15 @@ impl Instruction {
     pub fn stmt(code: c_ushort, k: c_uint) -> Self {
         Self::new(code, 0, 0, k)
     }
+
+    pub fn to_bytes(&self) -> [u8; 8] {
+        let mut bytes = [0u8; 8];
+        bytes[0..2].copy_from_slice(self.code.to_ne_bytes().as_slice());
+        bytes[2] = self.offset_jump_true;
+        bytes[3] = self.offset_jump_false;
+        bytes[4..8].copy_from_slice(self.multiuse_field.to_ne_bytes().as_slice());
+        bytes
+    }
 }
 
 #[cfg(test)]
