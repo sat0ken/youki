@@ -24,7 +24,7 @@ pub fn gen_validate(arc: &Arch, def_action: u32, jump_num: usize) -> Vec<Instruc
             Instruction::jump(
                 BPF_JMP | BPF_JEQ | BPF_K,
                 0,
-                (jump_num + 3) as c_uchar,
+                (jump_num + 4) as c_uchar,
                 arch,
             ),
             // load offset system call number
@@ -32,7 +32,12 @@ pub fn gen_validate(arc: &Arch, def_action: u32, jump_num: usize) -> Vec<Instruc
             // check system call is not using 32bit ABI
             // see https://github.com/elastic/go-seccomp-bpf/blob/main/filter.go#L231
             Instruction::jump(BPF_JMP | BPF_JGE | BPF_K, 0, 1, X32_SYSCALL_BIT),
-            Instruction::stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS as u32),
+            Instruction::jump(
+                BPF_JMP | BPF_JEQ | BPF_K,
+                0,
+                (jump_num + 1) as c_uchar,
+                u32::MAX,
+            ),
         ]
     } else {
         vec![
