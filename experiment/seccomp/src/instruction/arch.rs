@@ -69,7 +69,7 @@ mod tests {
         );
         assert_eq!(
             bpf_prog[1],
-            Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 6, AUDIT_ARCH_X86_64)
+            Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 7, AUDIT_ARCH_X86_64)
         );
         assert_eq!(
             bpf_prog[2],
@@ -81,7 +81,7 @@ mod tests {
         );
         assert_eq!(
             bpf_prog[4],
-            Instruction::stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS as u32)
+            Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 4, u32::MAX)
         );
     }
 
@@ -94,7 +94,7 @@ mod tests {
         );
         assert_eq!(
             bpf_prog[1],
-            Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 6, AUDIT_ARCH_AARCH64)
+            Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 7, AUDIT_ARCH_AARCH64)
         );
         assert_eq!(
             bpf_prog[2],
@@ -106,7 +106,7 @@ mod tests {
         );
         assert_eq!(
             bpf_prog[4],
-            Instruction::stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS as u32)
+            Instruction::jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 4, u32::MAX)
         );
     }
 }

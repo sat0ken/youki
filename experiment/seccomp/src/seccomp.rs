@@ -836,7 +836,7 @@ mod tests {
             .syscall(getcwd)
             .build()
             .expect("failed to build rule");
-        let inst = Rule::build_instruction(&rule, true, 1, &getcwd).unwrap();
+        let inst = Rule::build_instruction(&rule, SECCOMP_RET_ALLOW,true, 1, &getcwd).unwrap();
         assert_eq!(
             inst[0],
             Instruction::jump(BPF_JEQ | BPF_K, 1, 0, getcwd as c_uint)
@@ -851,7 +851,7 @@ mod tests {
             .syscall(getcwd)
             .build()
             .expect("failed to build rule");
-        let inst = Rule::build_instruction(&rule, true, 1, &getcwd).unwrap();
+        let inst = Rule::build_instruction(&rule, SECCOMP_RET_ALLOW,true, 1, &getcwd).unwrap();
         assert_eq!(
             inst[0],
             Instruction::jump(BPF_JEQ | BPF_K, 1, 0, getcwd as c_uint)
@@ -864,6 +864,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::Equal)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -873,8 +874,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -904,6 +905,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::Equal)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -913,8 +915,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -922,7 +924,7 @@ mod tests {
         );
         assert_eq!(
             inst[1],
-            Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, (offset + 4).into())
+            Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, (offset + 4) as c_uint)
         );
         assert_eq!(
             inst[2],
@@ -944,6 +946,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::NotEqual)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -953,12 +956,12 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 4, personality as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 5, personality as c_uint)
         );
         assert_eq!(
             inst[1],
@@ -966,7 +969,7 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 3, (personality_args >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
@@ -974,7 +977,7 @@ mod tests {
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 1, personality_args as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
@@ -984,6 +987,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::NotEqual)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -993,12 +997,12 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 4, personality as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 5, personality as c_uint)
         );
         assert_eq!(
             inst[1],
@@ -1006,7 +1010,7 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 3, (personality_args >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
@@ -1014,7 +1018,7 @@ mod tests {
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 1, personality_args as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
@@ -1024,6 +1028,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::LessThan)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1033,8 +1038,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -1068,6 +1073,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::LessThan)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1077,8 +1083,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -1112,6 +1118,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::LessOrEqual)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1121,8 +1128,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -1156,6 +1163,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::LessOrEqual)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1165,8 +1173,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -1200,6 +1208,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::GreaterOrEqual)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1209,8 +1218,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -1244,6 +1253,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::GreaterOrEqual)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1253,8 +1263,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -1288,6 +1298,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::GreaterThan)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1297,8 +1308,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -1332,6 +1343,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::GreaterThan)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1341,8 +1353,8 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
@@ -1376,6 +1388,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::MaskedEqual)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1385,12 +1398,12 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 4, personality as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 6, personality as c_uint)
         );
         assert_eq!(
             inst[1],
@@ -1398,15 +1411,23 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JSET | BPF_K, 3, 0, (personality_args >> 32) as c_uint)
+            Instruction::stmt(BPF_ALU | BPF_AND | BPF_K, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into())
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 3, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JSET | BPF_K, 1, 0, personality_args as c_uint)
+            Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into())
+        );
+        assert_eq!(
+            inst[5],
+            Instruction::stmt(BPF_ALU | BPF_AND | BPF_K, (personality_args) as c_uint)
+        );
+        assert_eq!(
+            inst[6],
+            Instruction::jump(BPF_JEQ | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
@@ -1416,6 +1437,7 @@ mod tests {
         let personality_args = 8;
         let rule_args = RuleArgsBuilder::default()
             .op(SeccompCompareOp::MaskedEqual)
+            .index(0)
             .values(personality_args)
             .build()
             .expect("failed to build rule");
@@ -1425,12 +1447,12 @@ mod tests {
             .rule_args(vec![rule_args.clone()])
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
+        let offset = seccomp_data_args_offset(rule_args.index).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality, SECCOMP_RET_ALLOW).unwrap();
 
         assert_eq!(
             inst[0],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 4, personality as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 6, personality as c_uint)
         );
         assert_eq!(
             inst[1],
@@ -1438,15 +1460,23 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JSET | BPF_K, 3, 0, (personality_args >> 32) as c_uint)
+            Instruction::stmt(BPF_ALU | BPF_AND | BPF_K, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into())
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 3, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JSET | BPF_K, 1, 0, personality_args as c_uint)
+            Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into())
+        );
+        assert_eq!(
+            inst[5],
+            Instruction::stmt(BPF_ALU | BPF_AND | BPF_K, (personality_args) as c_uint)
+        );
+        assert_eq!(
+            inst[6],
+            Instruction::jump(BPF_JEQ | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 }
