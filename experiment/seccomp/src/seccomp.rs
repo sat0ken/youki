@@ -17,6 +17,7 @@ use oci_spec::runtime::{
     Arch as OciSpecArch, LinuxSeccomp, LinuxSeccompAction, LinuxSeccompFilterFlag,
     LinuxSeccompOperator,
 };
+use std::io::Write;
 use std::os::raw::c_uchar;
 use std::str::FromStr;
 use std::{
@@ -26,8 +27,6 @@ use std::{
         unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
     },
 };
-use std::io::Write;
-use syscalls::{SyscallArgs, syscall_args};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SeccompError {
@@ -88,7 +87,8 @@ impl Seccomp {
 
     pub fn export_bpf<W: Write>(&self, writer: &mut W) -> Result<(), SeccompError> {
         for inst in &self.filters {
-            writer.write_all(inst.to_bytes().as_slice())
+            writer
+                .write_all(inst.to_bytes().as_slice())
                 .map_err(|e| SeccompError::Apply(e.to_string()))?;
         }
         Ok(())
@@ -316,12 +316,21 @@ fn check_seccomp(seccomp: &LinuxSeccomp) -> Result<(), SeccompError> {
 /// Converts one chunk (up to 254) of syscalls into a sequence of BPF instructions.
 /// The jump offset is complete within this chunk, and it is assumed that the matching instruction (an intermediate BPF_RET or a final BPF_RET)
 /// comes immediately after the chunk.
-fn syscall_to_bpf_chunk(rule: &Rule, chunk: &[u64]) -> Result<Vec<Instruction>, SeccompError> {
+fn syscall_to_bpf_chunk(rule_chunk: &&[Rule]) -> Result<Vec<Instruction>, SeccompError> {
     let mut bpf = vec![];
-    let n = chunk.len();
-    for (i, syscall) in chunk.iter().enumerate() {
+
+    let is_same_action = rule_chunk.iter().all(|r| r.action == rule_chunk[0].action);
+
+    let n = rule_chunk.len();
+    println!("n is {:?}", n);
+    for (i, rule) in rule_chunk.iter().enumerate() {
         let remain = n - i;
-        bpf.extend(Rule::build_instruction(rule, remain, syscall)?);
+        bpf.extend(Rule::build_instruction(
+            rule,
+            is_same_action,
+            remain,
+            &rule.syscall,
+        )?);
     }
     Ok(bpf)
 }
@@ -329,15 +338,18 @@ fn syscall_to_bpf_chunk(rule: &Rule, chunk: &[u64]) -> Result<Vec<Instruction>, 
 /// Divide the entire rule.syscall into chunks of 254,
 /// Construct the BPF instruction sequence so that jt/jf does not exceed 255.
 /// Insert BPF_JA + intermediate BPF_RET at the end of non-final chunks.
-fn build_syscall_section(rule: &Rule, action: u32) -> Result<Vec<Instruction>, SeccompError> {
+fn build_syscall_section(
+    rules: Vec<Rule>,
+    def_action: u32,
+) -> Result<Vec<Instruction>, SeccompError> {
     let mut bpf = vec![];
-    let chunks: Vec<&[u64]> = rule.syscall.chunks(254).collect();
+    let chunks: Vec<&[Rule]> = rules.chunks(254).collect();
     let last_idx = chunks.len().saturating_sub(1);
     for (i, chunk) in chunks.iter().enumerate() {
-        bpf.extend(syscall_to_bpf_chunk(rule, chunk)?);
+        bpf.extend(syscall_to_bpf_chunk(chunk)?);
         if i != last_idx {
             // bpf.push(Instruction::stmt(BPF_JMP | BPF_JA, 1));
-            bpf.push(Instruction::stmt(BPF_RET | BPF_K, action));
+            bpf.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
         }
     }
     Ok(bpf)
@@ -349,18 +361,18 @@ pub struct SeccompProgramPlan {
     pub def_action: u32,
     pub def_errno_ret: u32,
     pub flags: Vec<c_ulong>,
-    pub rule: Rule,
+    pub rules: Vec<Rule>,
 }
 
 impl TryFrom<SeccompProgramPlan> for Vec<Instruction> {
     type Error = SeccompError;
     fn try_from(inst_data: SeccompProgramPlan) -> Result<Self, SeccompError> {
-        let bpf_prog = build_syscall_section(&inst_data.rule, inst_data.rule.action)?;
+        let bpf_prog = build_syscall_section(inst_data.rules.clone(), inst_data.def_action)?;
 
         let mut all_bpf_prog = gen_validate(&inst_data.arc, inst_data.def_action, bpf_prog.len());
         all_bpf_prog.extend(bpf_prog);
         all_bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, inst_data.def_action));
-        all_bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, inst_data.rule.action));
+        // all_bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, inst_data.rule.action));
         Ok(all_bpf_prog)
     }
 }
@@ -417,64 +429,59 @@ impl TryFrom<LinuxSeccomp> for SeccompProgramPlan {
          */
         if let Some(syscalls) = seccomp.syscalls() {
             for syscall in syscalls {
-                data.rule.is_notify = data.rule.action == SECCOMP_RET_USER_NOTIF;
-                if syscall.action().eq(&LinuxSeccompAction::ScmpActErrno) {
+                let mut rule = Rule::default();
+                rule.is_notify = rule.action == SECCOMP_RET_USER_NOTIF;
+                if syscall.action().eq(&LinuxSeccompAction::ScmpActErrno)
+                    || syscall.action().eq(&LinuxSeccompAction::ScmpActTrace)
+                {
                     if let Some(errno_ret) = syscall.errno_ret() {
-                        data.rule.action = syscall.action().as_u32(Option::from(errno_ret));
+                        rule.action = syscall.action().as_u32(Option::from(errno_ret));
                     }
                 } else {
-                    data.rule.action = u32::from(syscall.action());
+                    rule.action = u32::from(syscall.action());
                 }
 
                 for name in syscall.names() {
-                    data.rule
-                        .syscall
-                        .push(get_syscall_number(&data.arc, name).unwrap());
+                    rule.syscall = get_syscall_number(&data.arc, name).unwrap();
+                    data.rules.push(rule.clone());
                     match syscall.args() {
                         Some(args) => {
                             if syscall.args().iter().len() > 6 {
                                 return Err(SeccompError::InvalidArgumentSize);
                             }
-                            data.rule
-                                .check_arg_syscall
-                                .push(get_syscall_number(&data.arc, name).unwrap());
                             for arg in args {
-                                data.rule.arg_cnt = Option::from(arg.index() as u8);
-                                data.rule.args = Option::from(syscall_args!(arg.value() as usize));
-                                if arg.value_two().is_some() {
-                                    data.rule.args = Option::from(syscall_args!(
-                                        arg.value() as usize,
-                                        arg.value_two().unwrap() as usize
-                                    ));
-                                }
-                                data.rule.op = Option::from(SeccompCompareOp::from(arg.op()))
+                                let mut rule_args = RuleArgs::default();
+                                rule_args.values = arg.value();
+                                rule_args.op = SeccompCompareOp::from(arg.op());
+                                rule.rule_args.push(rule_args);
                             }
                         }
                         None => continue,
                     }
                 }
-                data.rule.syscall.sort();
             }
+            data.rules.sort_by_key(|rule| rule.syscall);
         }
         Ok(data)
     }
 }
 
-#[derive(Builder, Debug, Default)]
+// RuleArgs for check argument of system call
+#[derive(Builder, Clone, Debug, Default)]
+pub struct RuleArgs {
+    pub values: u64,
+    pub op: SeccompCompareOp,
+}
+
+#[derive(Builder, Clone, Debug, Default)]
 #[builder(setter(into))]
 pub struct Rule {
-    pub syscall: Vec<u64>,
+    pub syscall: u64,
     pub action: u32,
     #[builder(default)]
     pub errno_ret: u32,
     #[builder(default)]
-    pub check_arg_syscall: Vec<u64>,
-    #[builder(default)]
-    pub arg_cnt: Option<u8>,
-    #[builder(default)]
-    pub args: Option<SyscallArgs>,
-    #[builder(default)]
-    pub op: Option<SeccompCompareOp>,
+    pub rule_args: Vec<RuleArgs>,
     #[builder(default)]
     pub is_notify: bool,
 }
@@ -482,40 +489,37 @@ pub struct Rule {
 #[allow(clippy::too_many_arguments)]
 impl Rule {
     pub fn new(
-        syscall: Vec<u64>,
+        syscall: u64,
         action: u32,
         errno_ret: u32,
-        check_arg_syscall: Vec<u64>,
-        arg_cnt: Option<u8>,
-        args: Option<SyscallArgs>,
-        op: Option<SeccompCompareOp>,
+        rule_args: Vec<RuleArgs>,
         is_notify: bool,
     ) -> Self {
         Self {
             syscall,
             action,
             errno_ret,
-            check_arg_syscall,
-            arg_cnt,
-            args,
-            op,
+            rule_args,
             is_notify,
         }
     }
 
-    fn jump_cnt(rule: &Rule, jump_num: usize) -> c_uchar {
-        if rule.arg_cnt.is_none() {
+    fn jump_cnt(rule: &Rule, mut jump_num: usize) -> c_uchar {
+        if rule.rule_args.len() == 0 {
             jump_num as c_uchar
         } else {
-            match rule.op.as_ref().unwrap() {
-                SeccompCompareOp::Equal
-                | SeccompCompareOp::NotEqual
-                | SeccompCompareOp::MaskedEqual => (jump_num + 4) as c_uchar,
-                SeccompCompareOp::GreaterThan
-                | SeccompCompareOp::GreaterOrEqual
-                | SeccompCompareOp::LessThan
-                | SeccompCompareOp::LessOrEqual => (jump_num + 5) as c_uchar,
+            for rule_args in rule.rule_args.iter() {
+                match rule_args.op {
+                    SeccompCompareOp::Equal
+                    | SeccompCompareOp::NotEqual
+                    | SeccompCompareOp::MaskedEqual => jump_num += 4,
+                    SeccompCompareOp::GreaterThan
+                    | SeccompCompareOp::GreaterOrEqual
+                    | SeccompCompareOp::LessThan
+                    | SeccompCompareOp::LessOrEqual => jump_num += 5,
+                }
             }
+            jump_num as c_uchar
         }
     }
 
@@ -524,213 +528,227 @@ impl Rule {
         syscall: &u64,
     ) -> Result<Vec<Instruction>, SeccompError> {
         let mut bpf_prog = vec![];
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap())?;
-        match rule.op.as_ref().unwrap() {
-            SeccompCompareOp::NotEqual => {
-                // if system call number is not match, skip args check jf 4 to default action
-                bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 4, *syscall as c_uint));
-                // upper 32bit check of args
-                bpf_prog.push(Instruction::stmt(
-                    BPF_LD | BPF_W | BPF_ABS,
-                    (offset + 4).into(),
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JEQ | BPF_K,
-                    0,
-                    3,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                // lower 32bit check of args
-                bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JEQ | BPF_K,
-                    0,
-                    1,
-                    rule.args.unwrap().arg0 as c_uint,
-                ));
-            }
-            SeccompCompareOp::LessThan => {
-                // if system call number is not match, skip args check jf 4 to default action
-                bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
-                // upper 32bit check of args
-                bpf_prog.push(Instruction::stmt(
-                    BPF_LD | BPF_W | BPF_ABS,
-                    (offset + 4).into(),
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JGE | BPF_K,
-                    0,
-                    4,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JEQ | BPF_K,
-                    0,
-                    2,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                // lower 32bit check of args
-                bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JGE | BPF_K,
-                    0,
-                    1,
-                    rule.args.unwrap().arg0 as c_uint,
-                ));
-            }
-            SeccompCompareOp::LessOrEqual => {
-                bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
-                // upper 32bit check of args
-                bpf_prog.push(Instruction::stmt(
-                    BPF_LD | BPF_W | BPF_ABS,
-                    (offset + 4).into(),
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JGE | BPF_K,
-                    0,
-                    4,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JEQ | BPF_K,
-                    0,
-                    2,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                // lower 32bit check of args
-                bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JGT | BPF_K,
-                    0,
-                    1,
-                    rule.args.unwrap().arg0 as c_uint,
-                ));
-            }
-            SeccompCompareOp::Equal => {
-                // if system call number is not match, skip args check jf 4 to default action
-                bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 4, *syscall as c_uint));
-                // upper 32bit check of args
-                bpf_prog.push(Instruction::stmt(
-                    BPF_LD | BPF_W | BPF_ABS,
-                    (offset + 4).into(),
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JEQ | BPF_K,
-                    0,
-                    2,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                // lower 32bit check of args
-                bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JEQ | BPF_K,
-                    1,
-                    0,
-                    rule.args.unwrap().arg0 as c_uint,
-                ));
-            }
-            SeccompCompareOp::GreaterOrEqual => {
-                // if system call number is not match, skip args check jf 4 to default action
-                bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
-                // upper 32bit check of args
-                bpf_prog.push(Instruction::stmt(
-                    BPF_LD | BPF_W | BPF_ABS,
-                    (offset + 4).into(),
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JGT | BPF_K,
-                    4,
-                    0,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JEQ | BPF_K,
-                    0,
-                    2,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                // lower 32bit check of args
-                bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JGE | BPF_K,
-                    1,
-                    0,
-                    rule.args.unwrap().arg0 as c_uint,
-                ));
-            }
-            SeccompCompareOp::GreaterThan => {
-                // if system call number is not match, skip args check jf 4 to default action
-                bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
-                // upper 32bit check of args
-                bpf_prog.push(Instruction::stmt(
-                    BPF_LD | BPF_W | BPF_ABS,
-                    (offset + 4).into(),
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JGT | BPF_K,
-                    4,
-                    0,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JEQ | BPF_K,
-                    0,
-                    2,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
-                // lower 32bit check of args
-                bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JGE | BPF_K,
-                    1,
-                    0,
-                    rule.args.unwrap().arg0 as c_uint,
-                ));
-            }
-            SeccompCompareOp::MaskedEqual => {
-                // if system call number is not match, skip args check jf 4 to default action
-                bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 4, *syscall as c_uint));
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8)?;
+        for rule_arg in rule.rule_args.iter() {
+            match rule_arg.op {
+                SeccompCompareOp::NotEqual => {
+                    // if system call number is not match, skip args check jf 4 to default action
+                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 4, *syscall as c_uint));
+                    // upper 32bit check of args
+                    bpf_prog.push(Instruction::stmt(
+                        BPF_LD | BPF_W | BPF_ABS,
+                        (offset + 4).into(),
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JEQ | BPF_K,
+                        0,
+                        3,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    // lower 32bit check of args
+                    bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JEQ | BPF_K,
+                        0,
+                        1,
+                        rule_arg.values as c_uint,
+                    ));
+                }
+                SeccompCompareOp::LessThan => {
+                    // if system call number is not match, skip args check jf 4 to default action
+                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
+                    // upper 32bit check of args
+                    bpf_prog.push(Instruction::stmt(
+                        BPF_LD | BPF_W | BPF_ABS,
+                        (offset + 4).into(),
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JGE | BPF_K,
+                        0,
+                        4,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JEQ | BPF_K,
+                        0,
+                        2,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    // lower 32bit check of args
+                    bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JGE | BPF_K,
+                        0,
+                        1,
+                        rule_arg.values as c_uint,
+                    ));
+                }
+                SeccompCompareOp::LessOrEqual => {
+                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
+                    // upper 32bit check of args
+                    bpf_prog.push(Instruction::stmt(
+                        BPF_LD | BPF_W | BPF_ABS,
+                        (offset + 4).into(),
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JGE | BPF_K,
+                        0,
+                        4,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JEQ | BPF_K,
+                        0,
+                        2,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    // lower 32bit check of args
+                    bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JGT | BPF_K,
+                        0,
+                        1,
+                        rule_arg.values as c_uint,
+                    ));
+                }
+                SeccompCompareOp::Equal => {
+                    // if system call number is not match, skip args check jf 4 to default action
+                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 4, *syscall as c_uint));
+                    // upper 32bit check of args
+                    bpf_prog.push(Instruction::stmt(
+                        BPF_LD | BPF_W | BPF_ABS,
+                        (offset + 4).into(),
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JEQ | BPF_K,
+                        0,
+                        2,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    // lower 32bit check of args
+                    bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JEQ | BPF_K,
+                        1,
+                        0,
+                        rule_arg.values as c_uint,
+                    ));
+                }
+                SeccompCompareOp::GreaterOrEqual => {
+                    // if system call number is not match, skip args check jf 4 to default action
+                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
+                    // upper 32bit check of args
+                    bpf_prog.push(Instruction::stmt(
+                        BPF_LD | BPF_W | BPF_ABS,
+                        (offset + 4).into(),
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JGT | BPF_K,
+                        4,
+                        0,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JEQ | BPF_K,
+                        0,
+                        2,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    // lower 32bit check of args
+                    bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JGE | BPF_K,
+                        1,
+                        0,
+                        rule_arg.values as c_uint,
+                    ));
+                }
+                SeccompCompareOp::GreaterThan => {
+                    // if system call number is not match, skip args check jf 4 to default action
+                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
+                    // upper 32bit check of args
+                    bpf_prog.push(Instruction::stmt(
+                        BPF_LD | BPF_W | BPF_ABS,
+                        (offset + 4).into(),
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JGT | BPF_K,
+                        4,
+                        0,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JEQ | BPF_K,
+                        0,
+                        2,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
+                    // lower 32bit check of args
+                    bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JGE | BPF_K,
+                        1,
+                        0,
+                        rule_arg.values as c_uint,
+                    ));
+                }
+                SeccompCompareOp::MaskedEqual => {
+                    // if system call number is not match, skip args check jf 4 to default action
+                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 4, *syscall as c_uint));
 
-                // upper 32bit check of args
-                bpf_prog.push(Instruction::stmt(
-                    BPF_LD | BPF_W | BPF_ABS,
-                    (offset + 4).into(),
-                ));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JSET | BPF_K,
-                    3,
-                    0,
-                    (rule.args.unwrap().arg0 >> 32) as c_uint,
-                ));
+                    // upper 32bit check of args
+                    bpf_prog.push(Instruction::stmt(
+                        BPF_LD | BPF_W | BPF_ABS,
+                        (offset + 4).into(),
+                    ));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JSET | BPF_K,
+                        3,
+                        0,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
 
-                // lower 32bit check of
-                bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
-                bpf_prog.push(Instruction::jump(
-                    BPF_JSET | BPF_K,
-                    1,
-                    0,
-                    rule.args.unwrap().arg0 as c_uint,
-                ));
+                    // lower 32bit check of
+                    bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JSET | BPF_K,
+                        1,
+                        0,
+                        rule_arg.values as c_uint,
+                    ));
+                }
             }
         }
+
         Ok(bpf_prog)
     }
 
     pub fn build_instruction(
         rule: &Rule,
+        is_same_action: bool,
         jump_num: usize,
         syscall: &u64,
     ) -> Result<Vec<Instruction>, SeccompError> {
         let mut bpf_prog = vec![];
-        if rule.arg_cnt.is_some() && rule.check_arg_syscall.contains(syscall) {
+        if rule.rule_args.len() != 0 {
             bpf_prog.extend(Rule::build_instruction_with_args(rule, syscall)?);
         } else {
-            bpf_prog.push(Instruction::jump(
-                BPF_JEQ | BPF_K,
-                Self::jump_cnt(rule, jump_num),
-                0,
-                *syscall as c_uint,
-            ));
+            if is_same_action {
+                bpf_prog.push(Instruction::jump(
+                    BPF_JEQ | BPF_K,
+                    jump_num as c_uchar,
+                    0,
+                    *syscall as c_uint,
+                ));
+            } else {
+                bpf_prog.push(Instruction::jump(
+                    BPF_JEQ | BPF_K,
+                    Self::jump_cnt(rule, 0),
+                    1,
+                    *syscall as c_uint,
+                ));
+                bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, rule.action));
+            }
         }
 
         Ok(bpf_prog)
@@ -758,10 +776,10 @@ mod tests {
         let getcwd = get_syscall_number(&Arch::X86, "getcwd").unwrap();
         let rule = RuleBuilder::default()
             .action(SECCOMP_RET_ALLOW)
-            .syscall(vec![getcwd])
+            .syscall(getcwd)
             .build()
             .expect("failed to build rule");
-        let inst = Rule::build_instruction(&rule, 1, &getcwd).unwrap();
+        let inst = Rule::build_instruction(&rule, true, 1, &getcwd).unwrap();
         assert_eq!(
             inst[0],
             Instruction::jump(BPF_JEQ | BPF_K, 1, 0, getcwd as c_uint)
@@ -773,10 +791,10 @@ mod tests {
         let getcwd = get_syscall_number(&Arch::AArch64, "getcwd").unwrap();
         let rule = RuleBuilder::default()
             .action(SECCOMP_RET_ALLOW)
-            .syscall(vec![getcwd])
+            .syscall(getcwd)
             .build()
             .expect("failed to build rule");
-        let inst = Rule::build_instruction(&rule, 1, &getcwd).unwrap();
+        let inst = Rule::build_instruction(&rule, true, 1, &getcwd).unwrap();
         assert_eq!(
             inst[0],
             Instruction::jump(BPF_JEQ | BPF_K, 1, 0, getcwd as c_uint)
@@ -785,30 +803,25 @@ mod tests {
 
     #[test]
     fn test_build_instruction_with_args_x86_equal() {
-        let persolality = get_syscall_number(&Arch::X86, "personality").unwrap();
-        let personality_args: SyscallArgs = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![persolality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![persolality])
-            .arg_cnt(1)
-            .args(Option::from(personality_args))
-            .op(Option::from(SeccompCompareOp::Equal))
+        let personality = get_syscall_number(&Arch::X86, "personality").unwrap();
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::Equal)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
-        let inst = Rule::build_instruction_with_args(&rule, &persolality).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
+        let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
             inst[0],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 4, persolality as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 4, personality as c_uint)
         );
         assert_eq!(
             inst[1],
@@ -816,12 +829,7 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(
-                BPF_JEQ | BPF_K,
-                0,
-                2,
-                (rule.args.unwrap().arg0 >> 32) as c_uint
-            )
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
@@ -829,31 +837,26 @@ mod tests {
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JEQ | BPF_K, 1, 0, rule.args.unwrap().arg0 as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_aarch64_equal() {
         let personality = get_syscall_number(&Arch::AArch64, "personality").unwrap();
-        let personality_args: SyscallArgs = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(personality_args))
-            .op(Option::from(SeccompCompareOp::Equal))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::Equal)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -866,12 +869,7 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(
-                BPF_JEQ | BPF_K,
-                0,
-                2,
-                (rule.args.unwrap().arg0 >> 32) as c_uint
-            )
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
@@ -879,31 +877,26 @@ mod tests {
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JEQ | BPF_K, 1, 0, rule.args.unwrap().arg0 as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_x86_not_equal() {
         let personality = get_syscall_number(&Arch::X86, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::NotEqual))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::NotEqual)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -916,7 +909,7 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 3, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 3, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
@@ -924,31 +917,26 @@ mod tests {
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 1, args.arg0 as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 1, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_aarch64_not_equal() {
         let personality = get_syscall_number(&Arch::AArch64, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::NotEqual))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::NotEqual)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -961,7 +949,7 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 3, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 3, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
@@ -969,31 +957,26 @@ mod tests {
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 1, args.arg0 as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 1, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_x86_less_than() {
         let personality = get_syscall_number(&Arch::X86, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::LessThan))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::LessThan)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1006,11 +989,11 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JGE | BPF_K, 0, 4, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 0, 4, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
@@ -1018,31 +1001,26 @@ mod tests {
         );
         assert_eq!(
             inst[5],
-            Instruction::jump(BPF_JGE | BPF_K, 0, 1, args.arg0 as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 0, 1, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_aarch64_less_than() {
         let personality = get_syscall_number(&Arch::AArch64, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::LessThan))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::LessThan)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1055,11 +1033,11 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JGE | BPF_K, 0, 4, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 0, 4, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
@@ -1067,31 +1045,26 @@ mod tests {
         );
         assert_eq!(
             inst[5],
-            Instruction::jump(BPF_JGE | BPF_K, 0, 1, args.arg0 as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 0, 1, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_x86_less_or_equal() {
         let personality = get_syscall_number(&Arch::X86, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::LessOrEqual))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::LessOrEqual)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1104,11 +1077,11 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JGE | BPF_K, 0, 4, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 0, 4, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
@@ -1116,31 +1089,26 @@ mod tests {
         );
         assert_eq!(
             inst[5],
-            Instruction::jump(BPF_JGT | BPF_K, 0, 1, args.arg0 as c_uint)
+            Instruction::jump(BPF_JGT | BPF_K, 0, 1, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_aarch64_less_or_equal() {
         let personality = get_syscall_number(&Arch::AArch64, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::LessOrEqual))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::LessOrEqual)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1153,11 +1121,11 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JGE | BPF_K, 0, 4, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 0, 4, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
@@ -1165,31 +1133,26 @@ mod tests {
         );
         assert_eq!(
             inst[5],
-            Instruction::jump(BPF_JGT | BPF_K, 0, 1, args.arg0 as c_uint)
+            Instruction::jump(BPF_JGT | BPF_K, 0, 1, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_x86_greater_or_equal() {
         let personality = get_syscall_number(&Arch::X86, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::GreaterOrEqual))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::GreaterOrEqual)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1202,11 +1165,11 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JGT | BPF_K, 4, 0, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JGT | BPF_K, 4, 0, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
@@ -1214,31 +1177,26 @@ mod tests {
         );
         assert_eq!(
             inst[5],
-            Instruction::jump(BPF_JGE | BPF_K, 1, 0, args.arg0 as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_aarch64_greater_or_equal() {
         let personality = get_syscall_number(&Arch::AArch64, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::GreaterOrEqual))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::GreaterOrEqual)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1251,11 +1209,11 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JGT | BPF_K, 4, 0, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JGT | BPF_K, 4, 0, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
@@ -1263,31 +1221,26 @@ mod tests {
         );
         assert_eq!(
             inst[5],
-            Instruction::jump(BPF_JGE | BPF_K, 1, 0, args.arg0 as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_x86_greater_than() {
         let personality = get_syscall_number(&Arch::X86, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::GreaterThan))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::GreaterThan)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1300,11 +1253,11 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JGT | BPF_K, 4, 0, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JGT | BPF_K, 4, 0, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
@@ -1312,31 +1265,26 @@ mod tests {
         );
         assert_eq!(
             inst[5],
-            Instruction::jump(BPF_JGE | BPF_K, 1, 0, args.arg0 as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_aarch64_greater_than() {
         let personality = get_syscall_number(&Arch::AArch64, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::GreaterThan))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::GreaterThan)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1349,11 +1297,11 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JGT | BPF_K, 4, 0, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JGT | BPF_K, 4, 0, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
-            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JEQ | BPF_K, 0, 2, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[4],
@@ -1361,31 +1309,26 @@ mod tests {
         );
         assert_eq!(
             inst[5],
-            Instruction::jump(BPF_JGE | BPF_K, 1, 0, args.arg0 as c_uint)
+            Instruction::jump(BPF_JGE | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_x86_masked_equal() {
         let personality = get_syscall_number(&Arch::X86, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::MaskedEqual))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::MaskedEqual)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1398,7 +1341,7 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JSET | BPF_K, 3, 0, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JSET | BPF_K, 3, 0, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
@@ -1406,31 +1349,26 @@ mod tests {
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JSET | BPF_K, 1, 0, args.arg0 as c_uint)
+            Instruction::jump(BPF_JSET | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 
     #[test]
     fn test_build_instruction_with_args_aarch64_masked_equal() {
         let personality = get_syscall_number(&Arch::AArch64, "personality").unwrap();
-        let args = SyscallArgs {
-            arg0: 8,
-            arg1: 0,
-            arg2: 0,
-            arg3: 0,
-            arg4: 0,
-            arg5: 0,
-        };
-        let rule = RuleBuilder::default()
-            .syscall(vec![personality])
-            .action(SECCOMP_RET_ALLOW)
-            .check_arg_syscall(vec![personality])
-            .arg_cnt(1)
-            .args(Option::from(args))
-            .op(Option::from(SeccompCompareOp::MaskedEqual))
+        let personality_args = 8;
+        let rule_args = RuleArgsBuilder::default()
+            .op(SeccompCompareOp::MaskedEqual)
+            .values(personality_args)
             .build()
             .expect("failed to build rule");
-        let offset = seccomp_data_args_offset(rule.arg_cnt.unwrap()).unwrap();
+        let rule = RuleBuilder::default()
+            .syscall(personality)
+            .action(SECCOMP_RET_ALLOW)
+            .rule_args(vec![rule_args.clone()])
+            .build()
+            .expect("failed to build rule");
+        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8).unwrap();
         let inst = Rule::build_instruction_with_args(&rule, &personality).unwrap();
 
         assert_eq!(
@@ -1443,7 +1381,7 @@ mod tests {
         );
         assert_eq!(
             inst[2],
-            Instruction::jump(BPF_JSET | BPF_K, 3, 0, (args.arg0 >> 32) as c_uint)
+            Instruction::jump(BPF_JSET | BPF_K, 3, 0, (personality_args >> 32) as c_uint)
         );
         assert_eq!(
             inst[3],
@@ -1451,7 +1389,7 @@ mod tests {
         );
         assert_eq!(
             inst[4],
-            Instruction::jump(BPF_JSET | BPF_K, 1, 0, args.arg0 as c_uint)
+            Instruction::jump(BPF_JSET | BPF_K, 1, 0, personality_args as c_uint)
         );
     }
 }
