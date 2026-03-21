@@ -316,22 +316,25 @@ fn check_seccomp(seccomp: &LinuxSeccomp) -> Result<(), SeccompError> {
 /// Converts one chunk (up to 254) of syscalls into a sequence of BPF instructions.
 /// The jump offset is complete within this chunk, and it is assumed that the matching instruction (an intermediate BPF_RET or a final BPF_RET)
 /// comes immediately after the chunk.
-fn syscall_to_bpf_chunk(rule_chunk: &&[Rule]) -> Result<Vec<Instruction>, SeccompError> {
+fn syscall_to_bpf_chunk(
+    def_action: u32,
+    rule_chunk: &&[Rule],
+    is_same_action: bool,
+) -> Result<Vec<Instruction>, SeccompError> {
     let mut bpf = vec![];
 
-    let is_same_action = rule_chunk.iter().all(|r| r.action == rule_chunk[0].action);
-
     let n = rule_chunk.len();
-    println!("n is {:?}", n);
     for (i, rule) in rule_chunk.iter().enumerate() {
         let remain = n - i;
         bpf.extend(Rule::build_instruction(
             rule,
+            def_action,
             is_same_action,
             remain,
             &rule.syscall,
         )?);
     }
+
     Ok(bpf)
 }
 
@@ -345,14 +348,45 @@ fn build_syscall_section(
     let mut bpf = vec![];
     let chunks: Vec<&[Rule]> = rules.chunks(254).collect();
     let last_idx = chunks.len().saturating_sub(1);
+
+    let mut action = 0;
+    let mut is_same_action = false;
+    // check filter action is same to all system call or not
+    match check_same_action(&rules) {
+        Some(check) => {
+            action = check;
+            is_same_action = true;
+        }
+        None => {}
+    }
+    let has_args = rules.iter().any(|r| !r.rule_args.is_empty());
+
     for (i, chunk) in chunks.iter().enumerate() {
-        bpf.extend(syscall_to_bpf_chunk(chunk)?);
+        bpf.extend(syscall_to_bpf_chunk(def_action, chunk, is_same_action)?);
         if i != last_idx {
             // bpf.push(Instruction::stmt(BPF_JMP | BPF_JA, 1));
             bpf.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
         }
     }
+    if is_same_action {
+        if !has_args {
+            bpf.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
+            bpf.push(Instruction::stmt(BPF_RET | BPF_K, action));
+        }
+    }
+    bpf.push(Instruction::stmt(BPF_RET | BPF_K, 0));
+
     Ok(bpf)
+}
+
+// check all action for system call is same or not
+fn check_same_action(rules: &[Rule]) -> Option<u32> {
+    let first = rules.first()?.action;
+    if rules.iter().all(|r| r.action == first) {
+        Some(first)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Default)]
@@ -368,11 +402,9 @@ impl TryFrom<SeccompProgramPlan> for Vec<Instruction> {
     type Error = SeccompError;
     fn try_from(inst_data: SeccompProgramPlan) -> Result<Self, SeccompError> {
         let bpf_prog = build_syscall_section(inst_data.rules.clone(), inst_data.def_action)?;
-
-        let mut all_bpf_prog = gen_validate(&inst_data.arc, inst_data.def_action, bpf_prog.len());
+        let mut all_bpf_prog =
+            gen_validate(&inst_data.arc, inst_data.def_action, bpf_prog.len() - 2);
         all_bpf_prog.extend(bpf_prog);
-        all_bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, inst_data.def_action));
-        // all_bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, inst_data.rule.action));
         Ok(all_bpf_prog)
     }
 }
@@ -429,35 +461,33 @@ impl TryFrom<LinuxSeccomp> for SeccompProgramPlan {
          */
         if let Some(syscalls) = seccomp.syscalls() {
             for syscall in syscalls {
-                let mut rule = Rule::default();
-                rule.is_notify = rule.action == SECCOMP_RET_USER_NOTIF;
-                if syscall.action().eq(&LinuxSeccompAction::ScmpActErrno)
-                    || syscall.action().eq(&LinuxSeccompAction::ScmpActTrace)
-                {
-                    if let Some(errno_ret) = syscall.errno_ret() {
-                        rule.action = syscall.action().as_u32(Option::from(errno_ret));
-                    }
-                } else {
-                    rule.action = u32::from(syscall.action());
-                }
-
                 for name in syscall.names() {
-                    rule.syscall = get_syscall_number(&data.arc, name).unwrap();
-                    data.rules.push(rule.clone());
-                    match syscall.args() {
-                        Some(args) => {
-                            if syscall.args().iter().len() > 6 {
-                                return Err(SeccompError::InvalidArgumentSize);
-                            }
-                            for arg in args {
-                                let mut rule_args = RuleArgs::default();
-                                rule_args.values = arg.value();
-                                rule_args.op = SeccompCompareOp::from(arg.op());
-                                rule.rule_args.push(rule_args);
-                            }
+                    let mut rule = Rule::default();
+                    rule.is_notify = rule.action == SECCOMP_RET_USER_NOTIF;
+                    if syscall.action().eq(&LinuxSeccompAction::ScmpActErrno)
+                        || syscall.action().eq(&LinuxSeccompAction::ScmpActTrace)
+                    {
+                        if let Some(errno_ret) = syscall.errno_ret() {
+                            rule.action = syscall.action().as_u32(Option::from(errno_ret));
                         }
-                        None => continue,
+                    } else {
+                        rule.action = u32::from(syscall.action());
                     }
+                    rule.syscall = get_syscall_number(&data.arc, name).unwrap();
+
+                    if let Some(args) = syscall.args() {
+                        if syscall.args().iter().len() > 6 {
+                            return Err(SeccompError::InvalidArgumentSize);
+                        }
+                        for (i, arg) in args.iter().enumerate() {
+                            let mut rule_args = RuleArgs::default();
+                            rule_args.index = i as u8;
+                            rule_args.values = arg.value();
+                            rule_args.op = SeccompCompareOp::from(arg.op());
+                            rule.rule_args.push(rule_args);
+                        }
+                    }
+                    data.rules.push(rule);
                 }
             }
             data.rules.sort_by_key(|rule| rule.syscall);
@@ -469,6 +499,7 @@ impl TryFrom<LinuxSeccomp> for SeccompProgramPlan {
 // RuleArgs for check argument of system call
 #[derive(Builder, Clone, Debug, Default)]
 pub struct RuleArgs {
+    pub index: u8,
     pub values: u64,
     pub op: SeccompCompareOp,
 }
@@ -526,14 +557,15 @@ impl Rule {
     fn build_instruction_with_args(
         rule: &Rule,
         syscall: &u64,
+        def_action: u32,
     ) -> Result<Vec<Instruction>, SeccompError> {
         let mut bpf_prog = vec![];
-        let offset = seccomp_data_args_offset(rule.rule_args.len() as u8)?;
         for rule_arg in rule.rule_args.iter() {
+            let offset = seccomp_data_args_offset(rule_arg.index)?;
             match rule_arg.op {
                 SeccompCompareOp::NotEqual => {
                     // if system call number is not match, skip args check jf 4 to default action
-                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 4, *syscall as c_uint));
+                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
                     // upper 32bit check of args
                     bpf_prog.push(Instruction::stmt(
                         BPF_LD | BPF_W | BPF_ABS,
@@ -542,17 +574,20 @@ impl Rule {
                     bpf_prog.push(Instruction::jump(
                         BPF_JEQ | BPF_K,
                         0,
-                        3,
+                        2,
                         (rule_arg.values >> 32) as c_uint,
                     ));
                     // lower 32bit check of args
                     bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
                     bpf_prog.push(Instruction::jump(
                         BPF_JEQ | BPF_K,
-                        0,
                         1,
+                        0,
                         rule_arg.values as c_uint,
                     ));
+
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, rule.action));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
                 }
                 SeccompCompareOp::LessThan => {
                     // if system call number is not match, skip args check jf 4 to default action
@@ -582,6 +617,8 @@ impl Rule {
                         1,
                         rule_arg.values as c_uint,
                     ));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, rule.action));
                 }
                 SeccompCompareOp::LessOrEqual => {
                     bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 5, *syscall as c_uint));
@@ -610,6 +647,8 @@ impl Rule {
                         1,
                         rule_arg.values as c_uint,
                     ));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, rule.action));
                 }
                 SeccompCompareOp::Equal => {
                     // if system call number is not match, skip args check jf 4 to default action
@@ -633,6 +672,8 @@ impl Rule {
                         0,
                         rule_arg.values as c_uint,
                     ));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, rule.action));
                 }
                 SeccompCompareOp::GreaterOrEqual => {
                     // if system call number is not match, skip args check jf 4 to default action
@@ -662,6 +703,8 @@ impl Rule {
                         0,
                         rule_arg.values as c_uint,
                     ));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, rule.action));
                 }
                 SeccompCompareOp::GreaterThan => {
                     // if system call number is not match, skip args check jf 4 to default action
@@ -691,31 +734,42 @@ impl Rule {
                         0,
                         rule_arg.values as c_uint,
                     ));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, rule.action));
                 }
                 SeccompCompareOp::MaskedEqual => {
                     // if system call number is not match, skip args check jf 4 to default action
-                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 4, *syscall as c_uint));
+                    bpf_prog.push(Instruction::jump(BPF_JEQ | BPF_K, 0, 6, *syscall as c_uint));
 
                     // upper 32bit check of args
                     bpf_prog.push(Instruction::stmt(
                         BPF_LD | BPF_W | BPF_ABS,
                         (offset + 4).into(),
                     ));
-                    bpf_prog.push(Instruction::jump(
-                        BPF_JSET | BPF_K,
-                        3,
-                        0,
+                    bpf_prog.push(Instruction::stmt(
+                        BPF_ALU | BPF_AND | BPF_K,
                         (rule_arg.values >> 32) as c_uint,
                     ));
-
+                    bpf_prog.push(Instruction::jump(
+                        BPF_JEQ | BPF_K,
+                        0,
+                        3,
+                        (rule_arg.values >> 32) as c_uint,
+                    ));
                     // lower 32bit check of
                     bpf_prog.push(Instruction::stmt(BPF_LD | BPF_W | BPF_ABS, offset.into()));
+                    bpf_prog.push(Instruction::stmt(
+                        BPF_ALU | BPF_AND | BPF_K,
+                        rule_arg.values as c_uint,
+                    ));
                     bpf_prog.push(Instruction::jump(
-                        BPF_JSET | BPF_K,
+                        BPF_JEQ | BPF_K,
                         1,
                         0,
                         rule_arg.values as c_uint,
                     ));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, def_action));
+                    bpf_prog.push(Instruction::stmt(BPF_RET | BPF_K, rule.action));
                 }
             }
         }
@@ -725,13 +779,16 @@ impl Rule {
 
     pub fn build_instruction(
         rule: &Rule,
+        def_action: u32,
         is_same_action: bool,
         jump_num: usize,
         syscall: &u64,
     ) -> Result<Vec<Instruction>, SeccompError> {
         let mut bpf_prog = vec![];
         if rule.rule_args.len() != 0 {
-            bpf_prog.extend(Rule::build_instruction_with_args(rule, syscall)?);
+            bpf_prog.extend(Rule::build_instruction_with_args(
+                rule, syscall, def_action,
+            )?);
         } else {
             if is_same_action {
                 bpf_prog.push(Instruction::jump(
