@@ -347,7 +347,7 @@ fn syscall_to_bpf_chunk(
 /// Divide the entire rule.syscall into chunks of 254,
 /// Construct the BPF instruction sequence so that jt/jf does not exceed 255.
 /// Insert BPF_JA + intermediate BPF_RET at the end of non-final chunks.
-fn build_syscall_section(
+pub fn build_syscall_section(
     rules: &Vec<Rule>,
     def_action: u32,
 ) -> Result<Vec<Instruction>, SeccompError> {
@@ -548,7 +548,7 @@ struct RuleArgumentContext<'a> {
 }
 
 // RuleArgs for check argument of system call
-#[derive(Builder, Clone, Debug, Default)]
+#[derive(Builder, Clone, Debug, Default, Copy)]
 pub struct RuleArgs {
     pub index: u8,
     pub values: u64,

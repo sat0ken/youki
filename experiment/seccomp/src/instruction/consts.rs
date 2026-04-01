@@ -61,7 +61,7 @@ pub const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 
 // Comparison operators
 // See libseccomp/include/seccomp.h.in
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Clone, Default, Copy)]
 pub enum SeccompCompareOp {
     NotEqual = 1,
     LessThan,
