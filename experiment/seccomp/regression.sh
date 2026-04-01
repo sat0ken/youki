@@ -26,6 +26,12 @@ case $1 in
   "06")
     do_test 06-sim-actions
     ;;
+  "07")
+    do_test 07-sim-db_bug_looping
+    ;;
+  "08")
+    do_test 08-sim-subtree_checks
+    ;;
   "18")
     do_test 18-sim-basic_allowlist
     ;;
