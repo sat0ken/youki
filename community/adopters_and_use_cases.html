@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Maintainer - Youki User and Developer Documentation</title>
+        <title>Adopters and Use Cases - Youki User and Developer Documentation</title>
 
 
         <!-- Custom HTML head -->
@@ -174,35 +174,32 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="current-maintainers"><a class="header" href="#current-maintainers">Current Maintainers</a></h1>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Name</th><th>Role</th><th>GitHub ID</th><th>Affiliation</th></tr>
-</thead>
-<tbody>
-<tr><td>Toru Komatsu</td><td>Committer</td><td><a href="https://github.com/utam0k">@utam0k</a></td><td>Preferred Networks</td></tr>
-<tr><td>Thomas Schubart</td><td>Committer</td><td><a href="https://github.com/Furisto">@Furisto</a></td><td>Gitpod</td></tr>
-<tr><td>Yashodhan</td><td>Committer</td><td><a href="https://github.com/YJDoc2">@YJDoc2</a></td><td>Independent</td></tr>
-<tr><td>Eric Fang</td><td>Committer</td><td><a href="https://github.com/yihuaf">@yihuaf</a></td><td>Independent</td></tr>
-<tr><td>Sascha Grunert</td><td>Committer</td><td><a href="https://github.com/saschagrunert">@saschagrunert</a></td><td>Red Hat</td></tr>
-<tr><td>Jorge Prendes</td><td>Committer</td><td><a href="https://github.com/jprendes">@jprendes</a></td><td>Microsoft</td></tr>
-<tr><td>Yusuke Sakurai</td><td>Committer</td><td><a href="https://github.com/saku3">@saku3</a></td><td>3-shake</td></tr>
-<tr><td>Lindroos Hsu</td><td>Reviewer</td><td><a href="https://github.com/tommady">@tommady</a></td><td>Independent</td></tr>
-<tr><td>Yuta Nagai</td><td>Reviewer</td><td><a href="https://github.com/nayuta723">@nayuta723</a></td><td>CyberAgent</td></tr>
-</tbody>
-</table>
-</div>
+                        <h1 id="adopters-and-use-cases"><a class="header" href="#adopters-and-use-cases">Adopters and Use Cases</a></h1>
+<p>This page collects public examples of projects that use youki or its crates.</p>
+<p>If you would like to add your project, please open a pull request with:</p>
+<ul>
+<li>project name and link</li>
+<li>a one-line summary</li>
+<li>crates being used, if you want to share them</li>
+</ul>
+<h2 id="rk8s"><a class="header" href="#rk8s"><a href="https://github.com/rk8s-dev/rk8s">rk8s</a></a></h2>
+<p>A lightweight Kubernetes-compatible container orchestration system written in Rust, implementing the Container Runtime Interface (CRI) with support for single containers, Kubernetes-style pods, and Docker Compose-style multi-container applications.</p>
+<p>Uses: <code>libcontainer</code>, <code>libcgroups</code></p>
+<h2 id="runwasi"><a class="header" href="#runwasi"><a href="https://github.com/containerd/runwasi">runwasi</a></a></h2>
+<p>A containerd shim that runs WebAssembly workloads in Docker and Kubernetes while using an OCI-compatible sandbox.</p>
+<p>Uses: <code>libcontainer</code></p>
+<h2 id="spinkube"><a class="header" href="#spinkube"><a href="https://www.spinkube.dev/">SpinKube</a></a></h2>
+<p>A platform for running Spin applications on Kubernetes. SpinKube uses <code>runwasi</code>, which in turn uses <code>libcontainer</code> to provide an OCI-compatible sandbox for workloads.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../community/adopters_and_use_cases.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../community/introduction.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../community/governance.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../community/maintainer.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -212,11 +209,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../community/adopters_and_use_cases.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../community/introduction.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../community/governance.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../community/maintainer.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
