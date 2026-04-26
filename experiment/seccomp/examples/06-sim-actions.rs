@@ -43,6 +43,7 @@ fn main() -> anyhow::Result<()> {
         seccomp.set_flags(inst_data.flags.clone());
     }
     seccomp.filters = Vec::try_from(inst_data)?;
+    // seccomp.print_bpf();
     seccomp.export_bpf(&mut io::stdout())?;
 
     Ok(())

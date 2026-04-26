@@ -6,63 +6,46 @@ use seccomp::seccomp::{Seccomp, SeccompProgramPlan};
 use std::io;
 
 fn main() -> anyhow::Result<()> {
-    let s_size_max = isize::MAX;
-
-    let openat = LinuxSyscallBuilder::default()
-        .names(vec!["openat".to_string()])
-        .action(LinuxSeccompAction::ScmpActAllow)
-        .build()?;
-    let close = LinuxSyscallBuilder::default()
-        .names(vec!["close".to_string()])
-        .action(LinuxSeccompAction::ScmpActAllow)
-        .build()?;
-
-    let mut args1 = LinuxSeccompArgBuilder::default()
+    let mut args = LinuxSeccompArgBuilder::default()
         .index(0usize)
         .value(0u64)
         .op(LinuxSeccompOperator::ScmpCmpEq)
-        .build()?;
-    let args2 = LinuxSeccompArgBuilder::default()
-        .index(1usize)
-        .value(0u64)
-        .op(LinuxSeccompOperator::ScmpCmpNe)
-        .build()?;
-    let args3 = LinuxSeccompArgBuilder::default()
-        .index(2usize)
-        .value(s_size_max as u64)
-        .op(LinuxSeccompOperator::ScmpCmpLt)
         .build()?;
 
     let read = LinuxSyscallBuilder::default()
         .names(vec!["read".to_string()])
         .action(LinuxSeccompAction::ScmpActAllow)
-        .args(vec![args1, args2, args3])
+        .args(vec![args])
         .build()?;
 
-    args1 = LinuxSeccompArgBuilder::default()
-        .index(1usize)
-        .value(0u64)
+    args = LinuxSeccompArgBuilder::default()
+        .index(0usize)
+        .value(1u64)
         .op(LinuxSeccompOperator::ScmpCmpEq)
         .build()?;
 
-    let write = LinuxSyscallBuilder::default()
+    let write1 = LinuxSyscallBuilder::default()
         .names(vec!["write".to_string()])
         .action(LinuxSeccompAction::ScmpActAllow)
-        .args(vec![args1, args2, args3])
+        .args(vec![args])
         .build()?;
 
-    args1 = LinuxSeccompArgBuilder::default()
-        .index(2usize)
-        .value(0u64)
+    args = LinuxSeccompArgBuilder::default()
+        .index(0usize)
+        .value(2u64)
         .op(LinuxSeccompOperator::ScmpCmpEq)
         .build()?;
 
     let write2 = LinuxSyscallBuilder::default()
         .names(vec!["write".to_string()])
         .action(LinuxSeccompAction::ScmpActAllow)
-        .args(vec![args1, args2, args3])
+        .args(vec![args])
         .build()?;
 
+    let close = LinuxSyscallBuilder::default()
+        .names(vec!["close".to_string()])
+        .action(LinuxSeccompAction::ScmpActAllow)
+        .build()?;
     let rt_sigreturn = LinuxSyscallBuilder::default()
         .names(vec!["rt_sigreturn".to_string()])
         .action(LinuxSeccompAction::ScmpActAllow)
@@ -70,16 +53,8 @@ fn main() -> anyhow::Result<()> {
 
     let spec_seccomp = LinuxSeccompBuilder::default()
         .architectures(vec![OciSpecArch::ScmpArchX86_64])
-        .default_action(LinuxSeccompAction::ScmpActKillThread)
-        .syscalls(vec![
-            openat,
-            close.clone(),
-            read,
-            write,
-            write2,
-            close.clone(),
-            rt_sigreturn,
-        ])
+        .default_action(LinuxSeccompAction::ScmpActKill)
+        .syscalls(vec![read, write1, write2, close, rt_sigreturn])
         .build()?;
     let inst_data = SeccompProgramPlan::try_from(spec_seccomp)?;
     let mut seccomp = Seccomp::new();
@@ -87,8 +62,7 @@ fn main() -> anyhow::Result<()> {
         seccomp.set_flags(inst_data.flags.clone());
     }
     seccomp.filters = Vec::try_from(inst_data)?;
-    seccomp.print_bpf();
-    // seccomp.export_bpf(&mut io::stdout())?;
+    seccomp.export_bpf(&mut io::stdout())?;
 
     Ok(())
 }

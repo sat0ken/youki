@@ -1,7 +1,9 @@
-use std::io;
 use nix::libc::SECCOMP_RET_KILL;
-use seccomp::instruction::{SECCOMP_RET_ALLOW, SeccompCompareOp, gen_validate, Arch};
-use seccomp::seccomp::{build_syscall_section, Rule, RuleArgs, RuleArgsBuilder, RuleBuilder, Seccomp};
+use seccomp::instruction::{Arch, SECCOMP_RET_ALLOW, SeccompCompareOp, gen_validate};
+use seccomp::seccomp::{
+    Rule, RuleArgs, RuleArgsBuilder, RuleBuilder, Seccomp, build_syscall_section,
+};
+use std::io;
 
 fn main() -> anyhow::Result<()> {
     let arg_rule0 = RuleArgsBuilder::default()
@@ -90,7 +92,12 @@ fn main() -> anyhow::Result<()> {
         RuleBuilder::default()
             .syscall(1002u64)
             .action(SECCOMP_RET_ALLOW)
-            .rule_args(vec![arg_rule0.clone(), arg_rule1.clone(), arg_rule2.clone(), arg_rule3.clone()])
+            .rule_args(vec![
+                arg_rule0.clone(),
+                arg_rule1.clone(),
+                arg_rule2.clone(),
+                arg_rule3.clone(),
+            ])
             .build()?,
     ]);
     // 1002, 2
@@ -114,7 +121,12 @@ fn main() -> anyhow::Result<()> {
         RuleBuilder::default()
             .syscall(1003u64)
             .action(SECCOMP_RET_ALLOW)
-            .rule_args(vec![arg_rule0.clone(), arg_rule1.clone(), arg_rule2.clone(), arg_rule3.clone()])
+            .rule_args(vec![
+                arg_rule0.clone(),
+                arg_rule1.clone(),
+                arg_rule2.clone(),
+                arg_rule3.clone(),
+            ])
             .build()?,
     ]);
     // 1004, 4
@@ -122,7 +134,12 @@ fn main() -> anyhow::Result<()> {
         RuleBuilder::default()
             .syscall(1004u64)
             .action(SECCOMP_RET_ALLOW)
-            .rule_args(vec![arg_rule0.clone(), arg_rule1.clone(), arg_rule2.clone(), arg_rule3.clone()])
+            .rule_args(vec![
+                arg_rule0.clone(),
+                arg_rule1.clone(),
+                arg_rule2.clone(),
+                arg_rule3.clone(),
+            ])
             .build()?,
     ]);
     // 1004, 2
@@ -138,7 +155,12 @@ fn main() -> anyhow::Result<()> {
         RuleBuilder::default()
             .syscall(1004u64)
             .action(SECCOMP_RET_ALLOW)
-            .rule_args(vec![arg_rule0.clone(), arg_rule1.clone(), arg_rule2.clone(), arg_rule11.clone()])
+            .rule_args(vec![
+                arg_rule0.clone(),
+                arg_rule1.clone(),
+                arg_rule2.clone(),
+                arg_rule11.clone(),
+            ])
             .build()?,
     ]);
     // 1004, 2
@@ -162,7 +184,12 @@ fn main() -> anyhow::Result<()> {
         RuleBuilder::default()
             .syscall(1005u64)
             .action(SECCOMP_RET_ALLOW)
-            .rule_args(vec![arg_rule0.clone(), arg_rule1.clone(), arg_rule2.clone(), arg_rule3.clone()])
+            .rule_args(vec![
+                arg_rule0.clone(),
+                arg_rule1.clone(),
+                arg_rule2.clone(),
+                arg_rule3.clone(),
+            ])
             .build()?,
     ]);
     // 1005, 2
@@ -178,7 +205,12 @@ fn main() -> anyhow::Result<()> {
         RuleBuilder::default()
             .syscall(1005u64)
             .action(SECCOMP_RET_ALLOW)
-            .rule_args(vec![arg_rule0.clone(), arg_rule1.clone(), arg_rule2.clone(), arg_rule33.clone()])
+            .rule_args(vec![
+                arg_rule0.clone(),
+                arg_rule1.clone(),
+                arg_rule2.clone(),
+                arg_rule33.clone(),
+            ])
             .build()?,
     ]);
     // 1006, 2

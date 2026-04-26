@@ -35,8 +35,14 @@ case $1 in
   "18")
     do_test 18-sim-basic_allowlist
     ;;
+  "23")
+    do_test 23-sim-arch_all_le_basic
+    ;;
   "25")
     do_test 25-sim-multilevel_chains_adv
+    ;;
+  "26")
+    do_test 23-sim-arch_all_le_basic
     ;;
   "28")
     do_test 28-sim-arch_x86
@@ -46,5 +52,8 @@ case $1 in
     ;;
   "34")
     do_test 34-sim-basic_denylist
+    ;;
+  "36")
+    do_test 36-sim-ipc_syscalls
     ;;
 esac
