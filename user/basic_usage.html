@@ -15,8 +15,8 @@
         <link rel="icon" href="../favicon-de23e50b.svg">
         <link rel="shortcut icon" href="../favicon-8114d1fc.png">
         <link rel="stylesheet" href="../css/variables-8adf115d.css">
-        <link rel="stylesheet" href="../css/general-2459343d.css">
-        <link rel="stylesheet" href="../css/chrome-ae938929.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
         <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-a8a046aa.js";
+            window.path_to_searchindex_js = "../searchindex-1e0e58ce.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-0bc41377.js"></script>
+        <script src="../toc-542fda56.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -241,8 +241,9 @@ docker export $(docker create busybox) | tar -C rootfs -xvf -
 <p>Now the any container runtime gets the information about the permissions, configurations and constraints for the container process by using a config.json file. Youki has a command which can generate the default config for you. To do this, run</p>
 <pre><code class="language-console">../youki spec
 </code></pre>
-<p>After this, you can manually edit the file to customize the behavior of the container process. For example, to run the desired program inside the container, you can edit the process.args</p>
+<p>After this, you can manually edit the file to customize the behavior of the container process. For example, to run the desired program inside the container, you can edit the process.args. Also set process.terminal to <code>false</code>, because <code>youki create</code> runs the container in the background and cannot allocate a terminal without <code>--console-socket</code>.</p>
 <pre><code class="language-json">"process": {
+"terminal": false,
 ...
 "args": [
   "sleep", "30"
@@ -271,7 +272,7 @@ sudo ./youki list
 sudo ./youki delete tutorial_container
 </code></pre>
 <p>The example above shows how to run Youki in a ‘rootful’ way. To run it without root permissions, that is, in rootless mode, few changes are required.</p>
-<p>First, after exporting the rootfs from docker, while generating the config, you will need to pass the rootless flag. This will generate the config withe the options needed for rootless operation of the container.</p>
+<p>First, after exporting the rootfs from docker, while generating the config, you will need to pass the rootless flag. This will generate the config with the options needed for rootless operation of the container.</p>
 <pre><code class="language-console">../youki spec --rootless
 </code></pre>
 <p>After this, the steps are basically the same, except you do not need to use sudo while running youki.</p>
@@ -334,11 +335,11 @@ log level to <code>debug</code>. This flag is ignored if <code>--log-level</code
 
         <script src="../elasticlunr-ef4e11c1.min.js"></script>
         <script src="../mark-09e88c2c.min.js"></script>
-        <script src="../searcher-c2a407aa.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
 
         <script src="../clipboard-1626706a.min.js"></script>
         <script src="../highlight-abc7f01d.js"></script>
-        <script src="../book-a0b12cfe.js"></script>
+        <script src="../book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 
